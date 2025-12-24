@@ -1,359 +1,188 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
+import { ArrowDown, Settings, Wallet, Info, RefreshCw, Plus, Twitter, Github, ChevronDown } from 'lucide-react';
 
-function App() {
+const ROUTER_ADDRESS = "0xB0aA1d29339bdFaC68a791d4C13b0698A239D97C";
+const WETH_ADDRESS = "0xc2F331332ca914685D773781744b1C589861C9Aa";
+
+const ROUTER_ABI = [
+  "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)",
+  "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
+  "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
+  "function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity)"
+];
+
+const ERC20_ABI = ["function approve(address spender, uint256 amount) external returns (bool)", "function allowance(address owner, address spender) view returns (uint256)", "function balanceOf(address owner) view returns (uint256)"];
+
+export default function App() {
+  const [tab, setTab] = useState('swap');
   const [account, setAccount] = useState('');
-  const [status, setStatus] = useState('');
-  const [activeTab, setActiveTab] = useState('swap');
+  const [loading, setLoading] = useState(false);
+  const [amountA, setAmountA] = useState('');
+  const [amountB, setAmountB] = useState('');
   const [provider, setProvider] = useState(null);
-  const [signer, setSigner] = useState(null);
-  const [routerContract, setRouterContract] = useState(null);
+  const [router, setRouter] = useState(null);
 
-  // CONFIG
-  const ROUTER_ADDRESS = "0xB0aA1d29339bdFaC68a791d4C13b0698A239D97C";
-  const WETH_ADDRESS = "0xc2F331332ca914685D773781744b1C589861C9Aa"; // Wrapped X1T
-
-  const CHAIN_ID_HEX = "10778";
-
-  const CHAIN_CONFIG = {
-    chainId: CHAIN_ID_HEX,
-    chainName: "Maculatus Testnet",
-    nativeCurrency: { name: "X1 Token", symbol: "X1T", decimals: 18 },
-    rpcUrls: ["https://maculatus-rpc.x1eco.com/"],
-    blockExplorerUrls: ["https://maculatus-scan.x1eco.com/"]
-  };
-
-  // Token default termasuk X1T
-  const DEFAULT_TOKENS = [
-    { name: "X1T (Native)", address: WETH_ADDRESS, decimals: 18 },
-    { name: "TKA", address: "0x6cF0576a5088ECE1cbc92cbDdD2496c8de5517FB", decimals: 18 },
-    { name: "TKB", address: "0x2C71ab7D51251BADaE2729E3F842c43fc6BB68c5", decimals: 18 },
-    { name: "TKC", address: "0x1234567890abcdef1234567890abcdef12345678", decimals: 18 },
+  // DAFTAR TOKEN LENGKAP
+  const tokens = [
+    { name: "X1T (Native)", symbol: "X1T", address: WETH_ADDRESS, isNative: true },
+    { name: "TKA", symbol: "TKA", address: "0x6cF0576a5088ECE1cbc92cbDdD2496c8de5517FB", isNative: false },
+    { name: "TKB", symbol: "TKB", address: "0x2C71ab7D51251BADaE2729E3F842c43fc6BB68c5", isNative: false }
   ];
 
-  const [customTokens, setCustomTokens] = useState([]);
+  const [tokenA, setTokenA] = useState(tokens[0]);
+  const [tokenB, setTokenB] = useState(tokens[1]);
+
+  // Update Harga Otomatis Saat Token atau Input Berubah
   useEffect(() => {
-    const saved = localStorage.getItem('maculatusCustomTokens');
-    if (saved) setCustomTokens(JSON.parse(saved));
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem('maculatusCustomTokens', JSON.stringify(customTokens));
-  }, [customTokens]);
-
-  const allTokens = [...DEFAULT_TOKENS, ...customTokens];
-
-  const [newTokenAddress, setNewTokenAddress] = useState('');
-
-  const ROUTER_ABI = [
-    "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)",
-    "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
-    "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-    "function addLiquidity(address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin, address to, uint deadline) external returns (uint amountA, uint amountB, uint liquidity)",
-    "function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity)"
-  ];
-
-  const ERC20_ABI = [
-    "function approve(address spender, uint256 amount) external returns (bool)",
-    "function allowance(address owner, address spender) view returns (uint256)",
-    "function symbol() view returns (string)",
-    "function decimals() view returns (uint8)"
-  ];
+    const fetchPrice = async () => {
+      if (!amountA || !router || tab !== 'swap' || tokenA.address === tokenB.address) return;
+      try {
+        const path = [tokenA.address, tokenB.address];
+        const amounts = await router.getAmountsOut(ethers.parseEther(amountA), path);
+        setAmountB(ethers.formatEther(amounts[1]));
+      } catch (e) { setAmountB("No Pool"); }
+    };
+    const timer = setTimeout(fetchPrice, 500);
+    return () => clearTimeout(timer);
+  }, [amountA, tokenA, tokenB, router, tab]);
 
   const connectWallet = async () => {
-    if (!window.ethereum) {
-      setStatus("Install MetaMask dulu!");
-      return;
-    }
+    if (!window.ethereum) return alert("Install MetaMask");
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const prov = new ethers.BrowserProvider(window.ethereum);
+    const sig = await prov.getSigner();
+    setAccount(accounts[0]);
+    setProvider(prov);
+    setRouter(new ethers.Contract(ROUTER_ADDRESS, ROUTER_ABI, sig));
+  };
 
+  const handleAction = async () => {
+    if (!account) return connectWallet();
+    setLoading(true);
     try {
-      try {
-        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: CHAIN_ID_HEX }] });
-      } catch (e) {
-        if (e.code === 4902) {
-          await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [CHAIN_CONFIG] });
+      const sig = await provider.getSigner();
+      const deadline = Math.floor(Date.now() / 1000) + 1200;
+      const valA = ethers.parseEther(amountA || "0");
+      const valB = ethers.parseEther(amountB === "No Pool" ? "0" : amountB || "0");
+
+      if (!tokenA.isNative) {
+        const tokenContract = new ethers.Contract(tokenA.address, ERC20_ABI, sig);
+        const allowance = await tokenContract.allowance(account, ROUTER_ADDRESS);
+        if (allowance < valA) {
+          await (await tokenContract.approve(ROUTER_ADDRESS, ethers.MaxUint256)).wait();
         }
       }
 
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      setAccount(accounts[0]);
-
-      const prov = new ethers.BrowserProvider(window.ethereum);
-      setProvider(prov);
-      const sig = await prov.getSigner();
-      setSigner(sig);
-      setRouterContract(new ethers.Contract(ROUTER_ADDRESS, ROUTER_ABI, sig));
-
-      setStatus("Wallet connected!");
-    } catch (err) {
-      setStatus("Gagal: " + (err.message || ''));
-    }
-  };
-
-  const addCustomToken = async () => {
-    if (!ethers.isAddress(newTokenAddress)) {
-      setStatus("Alamat invalid!");
-      return;
-    }
-
-    if (allTokens.some(t => t.address.toLowerCase() === newTokenAddress.toLowerCase())) {
-      setStatus("Token sudah ada!");
-      return;
-    }
-
-    try {
-      const tokenContract = new ethers.Contract(newTokenAddress, ERC20_ABI, provider || signer);
-      const [symbol, decimals] = await Promise.all([
-        tokenContract.symbol(),
-        tokenContract.decimals()
-      ]);
-
-      const newToken = { name: symbol || "Unknown", address: newTokenAddress, decimals: Number(decimals) };
-      setCustomTokens([...customTokens, newToken]);
-      setNewTokenAddress('');
-      setStatus(`Token ${symbol} ditambahkan!`);
-    } catch (err) {
-      setStatus("Gagal baca token");
-    }
-  };
-
-  // SWAP
-  const [tokenIn, setTokenIn] = useState(allTokens[0] || { decimals: 18 });
-  const [tokenOut, setTokenOut] = useState(allTokens[1] || { decimals: 18 });
-  const [amountIn, setAmountIn] = useState('');
-  const [amountOut, setAmountOut] = useState('');
-  const [loadingQuote, setLoadingQuote] = useState(false);
-
-  useEffect(() => {
-    if (amountIn && routerContract && tokenIn.address && tokenOut.address) {
-      getQuote();
-    } else {
-      setAmountOut('');
-    }
-  }, [amountIn, tokenIn, tokenOut, routerContract]);
-
-  const getQuote = async () => {
-    if (!amountIn || Number(amountIn) === 0) return;
-
-    setLoadingQuote(true);
-    try {
-      const amountInWei = ethers.parseUnits(amountIn, tokenIn.decimals);
-      const path = tokenIn.address === WETH_ADDRESS ? [WETH_ADDRESS, tokenOut.address] : tokenOut.address === WETH_ADDRESS ? [tokenIn.address, WETH_ADDRESS] : [tokenIn.address, tokenOut.address];
-      const amounts = await routerContract.getAmountsOut(amountInWei, path);
-      setAmountOut(ethers.formatUnits(amounts[1], tokenOut.decimals));
-    } catch (err) {
-      setAmountOut('No liquidity');
-    }
-    setLoadingQuote(false);
-  };
-
-  const executeSwap = async () => {
-    if (!amountOut || amountOut === 'No liquidity') return;
-
-    setStatus("Swapping...");
-    try {
-      const amountInWei = ethers.parseUnits(amountIn, tokenIn.decimals);
-      const amountOutMin = ethers.parseUnits((Number(amountOut) * 0.95).toString(), tokenOut.decimals);
-      const deadline = Math.floor(Date.now() / 1000) + 1200;
-
       let tx;
-
-      if (tokenIn.address === WETH_ADDRESS) {
-        // X1T → Token
-        tx = await routerContract.swapExactETHForTokens(
-          amountOutMin,
-          [WETH_ADDRESS, tokenOut.address],
-          account,
-          deadline,
-          { value: amountInWei }
-        );
-      } else if (tokenOut.address === WETH_ADDRESS) {
-        // Token → X1T
-        tx = await routerContract.swapExactTokensForETH(
-          amountInWei,
-          amountOutMin,
-          [tokenIn.address, WETH_ADDRESS],
-          account,
-          deadline
-        );
+      if (tab === 'swap') {
+        const path = [tokenA.address, tokenB.address];
+        tx = tokenA.isNative 
+          ? await router.swapExactETHForTokens(0, path, account, deadline, { value: valA })
+          : await router.swapExactTokensForETH(valA, 0, path, account, deadline);
       } else {
-        // Token → Token
-        tx = await routerContract.swapExactTokensForTokens(
-          amountInWei,
-          amountOutMin,
-          [tokenIn.address, tokenOut.address],
-          account,
-          deadline
-        );
+        const tokenAddr = tokenA.isNative ? tokenB.address : tokenA.address;
+        const tAmt = tokenA.isNative ? valB : valA;
+        const eAmt = tokenA.isNative ? valA : valB;
+        tx = await router.addLiquidityETH(tokenAddr, tAmt, 0, 0, account, deadline, { value: eAmt });
       }
-
       await tx.wait();
-      setStatus("Swap berhasil!");
-    } catch (err) {
-      setStatus("Swap gagal: " + (err.reason || err.message || ''));
-    }
-  };
-
-  // ADD LIQUIDITY
-  const [liqTokenA, setLiqTokenA] = useState(allTokens[0] || { decimals: 18 });
-  const [liqTokenB, setLiqTokenB] = useState(allTokens[1] || { decimals: 18 });
-  const [liqAmountA, setLiqAmountA] = useState('');
-  const [liqAmountB, setLiqAmountB] = useState('');
-
-  const approveToken = async (token, amountStr) => {
-    if (!amountStr || Number(amountStr) === 0) return;
-
-    const tokenContract = new ethers.Contract(token.address, ERC20_ABI, signer);
-    const amountWei = ethers.parseUnits(amountStr, token.decimals);
-    const allowance = await tokenContract.allowance(account, ROUTER_ADDRESS);
-
-    if (allowance >= amountWei) return;
-
-    const tx = await tokenContract.approve(ROUTER_ADDRESS, ethers.MaxUint256);
-    await tx.wait();
-  };
-
-  const addLiquidity = async () => {
-    if (!liqAmountA || !liqAmountB) return;
-
-    setStatus("Adding liquidity...");
-    try {
-      // Approve token (skip kalau X1T)
-      if (liqTokenA.address !== WETH_ADDRESS) await approveToken(liqTokenA, liqAmountA);
-      if (liqTokenB.address !== WETH_ADDRESS) await approveToken(liqTokenB, liqAmountB);
-
-      const amountAWei = ethers.parseUnits(liqAmountA, liqTokenA.decimals);
-      const amountBWei = ethers.parseUnits(liqAmountB, liqTokenB.decimals);
-      const deadline = Math.floor(Date.now() / 1000) + 1200;
-
-      let tx;
-
-      if (liqTokenA.address === WETH_ADDRESS) {
-        tx = await routerContract.addLiquidityETH(
-          liqTokenB.address,
-          amountBWei,
-          0,
-          0,
-          account,
-          deadline,
-          { value: amountAWei }
-        );
-      } else if (liqTokenB.address === WETH_ADDRESS) {
-        tx = await routerContract.addLiquidityETH(
-          liqTokenA.address,
-          amountAWei,
-          0,
-          0,
-          account,
-          deadline,
-          { value: amountBWei }
-        );
-      } else {
-        tx = await routerContract.addLiquidity(
-          liqTokenA.address,
-          liqTokenB.address,
-          amountAWei,
-          amountBWei,
-          0,
-          0,
-          account,
-          deadline
-        );
-      }
-
-      await tx.wait();
-      setStatus("Liquidity berhasil ditambahkan!");
-    } catch (err) {
-      setStatus("Gagal: " + (err.reason || err.message || ''));
-    }
+      alert("Success!");
+    } catch (e) { alert("Failed! Check Pool/Balance."); }
+    setLoading(false);
   };
 
   return (
-    <div style={{ fontFamily: 'Arial', textAlign: 'center', padding: '20px', background: '#f0f2f5', minHeight: '100vh' }}>
-      <h1>Maculatus Swap</h1>
-      <p>Custom DEX di Maculatus Testnet</p>
-
-      {!account ? (
-        <button onClick={connectWallet} style={{ padding: '15px 30px', fontSize: '18px', background: '#0066ff', color: 'white', border: 'none', borderRadius: '8px' }}>
-          Connect Wallet
-        </button>
-      ) : (
-        <div>
-          <p style={{ color: 'green' }}>Connected: {account.slice(0,6)}...{account.slice(-4)}</p>
-
-          {/* Import Token Manual */}
-          <div style={{ maxWidth: '500px', margin: '20px auto' }}>
-            <input
-              type="text"
-              placeholder="Paste token address baru"
-              value={newTokenAddress}
-              onChange={e => setNewTokenAddress(e.target.value)}
-              style={{ width: '70%', padding: '10px', borderRadius: '8px', border: '1px solid #ccc' }}
-            />
-            <button onClick={addCustomToken} style={{ width: '28%', padding: '10px', marginLeft: '2%', background: '#28a745', color: 'white', border: 'none', borderRadius: '8px' }}>
-              Add Token
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', margin: '20px 0' }}>
-            <button onClick={() => setActiveTab('swap')} style={{ padding: '10px 20px', background: activeTab === 'swap' ? '#0066ff' : '#ddd', color: 'white' }}>
-              Swap
-            </button>
-            <button onClick={() => setActiveTab('liquidity')} style={{ padding: '10px 20px', background: activeTab === 'liquidity' ? '#0066ff' : '#ddd', color: 'white' }}>
-              Add Liquidity
-            </button>
-          </div>
-
-          {activeTab === 'swap' && (
-            <div style={{ maxWidth: '400px', margin: '0 auto', background: 'white', padding: '20px', borderRadius: '12px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }}>
-              <h3>Swap Token</h3>
-
-              <select value={tokenIn.address || ''} onChange={e => setTokenIn(allTokens.find(t => t.address === e.target.value) || allTokens[0])}>
-                {allTokens.map(t => <option key={t.address} value={t.address}>{t.name}</option>)}
-              </select>
-              <input type="number" placeholder="Amount In" value={amountIn} onChange={e => setAmountIn(e.target.value)} style={{ width: '100%', padding: '10px', margin: '10px 0' }} />
-
-              <div style={{ fontSize: '30px' }}>↓</div>
-
-              <select value={tokenOut.address || ''} onChange={e => setTokenOut(allTokens.find(t => t.address === e.target.value) || allTokens[1])}>
-                {allTokens.filter(t => t.address !== tokenIn.address).map(t => <option key={t.address} value={t.address}>{t.name}</option>)}
-              </select>
-              <input type="text" value={loadingQuote ? 'Loading...' : amountOut} readOnly style={{ width: '100%', padding: '10px', margin: '10px 0' }} />
-
-              <button onClick={executeSwap} disabled={!amountOut || amountOut === 'No liquidity'} style={{ width: '100%', padding: '15px', background: '#0066ff', color: 'white', border: 'none', fontSize: '18px' }}>
-                Swap
-              </button>
+    <div className="min-h-screen bg-[#050c0a] text-emerald-500 flex flex-col items-center justify-center p-4 font-sans relative overflow-hidden">
+      <div className="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] bg-emerald-900/10 blur-[130px] rounded-full shadow-[inset_0_0_100px_rgba(16,185,129,0.1)]"></div>
+      
+      <div className="z-10 w-full max-w-[460px] space-y-6">
+        {/* Header */}
+        <div className="flex justify-between items-center px-2">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 border-2 border-emerald-500 rounded-xl flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.4)] bg-emerald-500/5">
+              <span className="font-black text-xl text-emerald-400 font-mono italic">D</span>
             </div>
-          )}
-
-          {activeTab === 'liquidity' && (
-            <div style={{ maxWidth: '400px', margin: '0 auto', background: 'white', padding: '20px', borderRadius: '12px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }}>
-              <h3>Add Liquidity</h3>
-
-              <select value={liqTokenA.address || ''} onChange={e => setLiqTokenA(allTokens.find(t => t.address === e.target.value) || allTokens[0])}>
-                {allTokens.map(t => <option key={t.address} value={t.address}>{t.name}</option>)}
-              </select>
-              <input type="number" placeholder="Amount A" value={liqAmountA} onChange={e => setLiqAmountA(e.target.value)} style={{ width: '100%', padding: '10px', margin: '10px 0' }} />
-
-              <div style={{ fontSize: '30px' }}>+</div>
-
-              <select value={liqTokenB.address || ''} onChange={e => setLiqTokenB(allTokens.find(t => t.address === e.target.value) || allTokens[1])}>
-                {allTokens.filter(t => t.address !== liqTokenA.address).map(t => <option key={t.address} value={t.address}>{t.name}</option>)}
-              </select>
-              <input type="number" placeholder="Amount B" value={liqAmountB} onChange={e => setLiqAmountB(e.target.value)} style={{ width: '100%', padding: '10px', margin: '10px 0' }} />
-
-              <button onClick={addLiquidity} style={{ width: '100%', padding: '15px', background: '#28a745', color: 'white', border: 'none', fontSize: '18px' }}>
-                Add Liquidity
-              </button>
-            </div>
-          )}
+            <h1 className="text-xl font-black tracking-[0.15em] uppercase italic text-emerald-400">Decentralized</h1>
+          </div>
+          <div className="flex items-center gap-3">
+            {account ? (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-xl text-[10px] font-bold text-emerald-400 font-mono shadow-[0_0_10px_rgba(16,185,129,0.1)]">
+                {account.slice(0,6)}...
+              </div>
+            ) : (
+              <button onClick={connectWallet} className="bg-emerald-500 text-black px-4 py-2 rounded-full text-[10px] font-black hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] transition-all">CONNECT</button>
+            )}
+          </div>
         </div>
-      )}
 
-      {status && <p style={{ marginTop: '20px', color: status.includes('berhasil') ? 'green' : 'red' }}>{status}</p>}
+        {/* Card */}
+        <div className="bg-[#0a1814]/90 backdrop-blur-2xl border border-emerald-500/20 rounded-[44px] p-6 shadow-2xl">
+          <div className="flex bg-black/40 p-1.5 rounded-[22px] border border-emerald-900/30 mb-8">
+            <button onClick={() => setTab('swap')} className={`flex-1 py-3 rounded-[18px] text-[11px] font-black uppercase tracking-[0.2em] transition-all ${tab === 'swap' ? 'bg-emerald-500 text-black shadow-[0_0_15px_rgba(16,185,129,0.3)]' : 'text-emerald-900'}`}>Swap</button>
+            <button onClick={() => setTab('liquidity')} className={`flex-1 py-3 rounded-[18px] text-[11px] font-black uppercase tracking-[0.2em] transition-all ${tab === 'liquidity' ? 'bg-emerald-500 text-black shadow-[0_0_15px_rgba(16,185,129,0.3)]' : 'text-emerald-900'}`}>Liquidity</button>
+          </div>
+
+          <div className="space-y-2 relative">
+            {/* Input A */}
+            <div className="bg-black/40 border border-emerald-500/10 p-6 rounded-[32px] hover:border-emerald-500/30 transition-all">
+              <label className="text-[10px] font-black text-emerald-900 uppercase tracking-widest block mb-4">You Pay</label>
+              <div className="flex items-center gap-4">
+                <input type="number" placeholder="0.0" value={amountA} onChange={(e) => setAmountA(e.target.value)} className="bg-transparent text-4xl font-bold text-emerald-500 w-full outline-none placeholder:text-emerald-950" />
+                
+                {/* SELECT TOKEN A */}
+                <select 
+                  value={tokenA.address} 
+                  onChange={(e) => setTokenA(tokens.find(t => t.address === e.target.value))}
+                  className="bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 rounded-2xl text-emerald-400 font-bold text-xs outline-none cursor-pointer appearance-none hover:bg-emerald-500/20 transition-all"
+                >
+                  {tokens.map(t => <option key={t.address} value={t.address} className="bg-[#0a1814]">{t.symbol}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* Icon Switcher */}
+            <div className="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+              <div onClick={() => {setTokenA(tokenB); setTokenB(tokenA)}} className="w-12 h-12 bg-[#050c0a] border-2 border-emerald-500 rounded-2xl flex items-center justify-center text-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.4)] rotate-45 hover:rotate-0 transition-all cursor-pointer group">
+                <div className="-rotate-45 group-hover:rotate-0 transition-all">{tab === 'swap' ? <ArrowDown size={20} /> : <Plus size={20} />}</div>
+              </div>
+            </div>
+
+            {/* Input B */}
+            <div className="bg-black/40 border border-emerald-500/10 p-6 rounded-[32px] pt-12">
+              <label className="text-[10px] font-black text-emerald-900 uppercase tracking-widest block mb-4">You Receive</label>
+              <div className="flex items-center gap-4">
+                <input type="text" readOnly placeholder="0.0" value={amountB} className="bg-transparent text-4xl font-bold text-emerald-100 w-full outline-none" />
+                
+                {/* SELECT TOKEN B */}
+                <select 
+                  value={tokenB.address} 
+                  onChange={(e) => setTokenB(tokens.find(t => t.address === e.target.value))}
+                  className="bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 rounded-2xl text-emerald-400 font-bold text-xs outline-none cursor-pointer appearance-none hover:bg-emerald-500/20 transition-all"
+                >
+                  {tokens.map(t => <option key={t.address} value={t.address} className="bg-[#0a1814]">{t.symbol}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <button 
+            disabled={loading || !amountA || amountB === "No Pool"} 
+            onClick={handleAction} 
+            className="w-full mt-8 h-20 bg-emerald-500 hover:bg-emerald-400 disabled:bg-emerald-950 disabled:text-emerald-900 text-black rounded-[28px] font-black text-xl tracking-[0.3em] shadow-[0_0_30px_rgba(16,185,129,0.2)] transition-all flex items-center justify-center gap-3 uppercase"
+          >
+            {loading ? <RefreshCw className="animate-spin" /> : amountB === "No Pool" ? "No Liquidity" : tab === 'swap' ? 'Swap Tokens' : 'Add Supply'}
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div className="flex flex-col items-center gap-4 pt-4">
+          <div className="flex gap-6">
+            <a href="https://twitter.com/maxi_dak" target="_blank" rel="noreferrer" className="text-emerald-900 hover:text-emerald-400 transition-colors flex items-center gap-2 font-black text-[10px] uppercase tracking-[0.2em]"><Twitter size={16} /> @maxi_dak</a>
+            <a href="https://github.com/YFiN99" target="_blank" rel="noreferrer" className="text-emerald-900 hover:text-emerald-400 transition-colors flex items-center gap-2 font-black text-[10px] uppercase tracking-[0.2em]"><Github size={16} /> YFiN99</a>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
-
-export default App;
